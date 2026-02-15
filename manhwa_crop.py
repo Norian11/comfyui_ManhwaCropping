@@ -11,14 +11,30 @@ import folder_paths
 from comfy.cli_args import args
 
 
-def _snap_size_to_16(size: int, max_side: int) -> int:
-    if max_side <= 0:
-        return 1
-    max_multiple = (max_side // 16) * 16
-    if max_multiple >= 16:
-        snapped = int(round(size / 16.0) * 16)
-        return max(16, min(snapped, max_multiple))
-    return max(1, min(int(size), max_side))
+def _snap_size_to_16(size: int) -> int:
+    snapped = int(round(float(size) / 16.0) * 16.0)
+    return max(16, snapped)
+
+
+def _extract_square_with_white_padding(image_tensor: torch.Tensor, x: int, y: int, side: int) -> torch.Tensor:
+    b, h, w, c = image_tensor.shape
+    out = torch.ones((b, side, side, c), dtype=image_tensor.dtype, device=image_tensor.device)
+
+    src_x0 = max(0, int(x))
+    src_y0 = max(0, int(y))
+    src_x1 = min(int(w), int(x) + int(side))
+    src_y1 = min(int(h), int(y) + int(side))
+
+    if src_x1 <= src_x0 or src_y1 <= src_y0:
+        return out
+
+    dst_x0 = src_x0 - int(x)
+    dst_y0 = src_y0 - int(y)
+    dst_x1 = dst_x0 + (src_x1 - src_x0)
+    dst_y1 = dst_y0 + (src_y1 - src_y0)
+
+    out[:, dst_y0:dst_y1, dst_x0:dst_x1, :] = image_tensor[:, src_y0:src_y1, src_x0:src_x1, :]
+    return out
 
 
 class ManhwaCrop:
@@ -33,8 +49,8 @@ class ManhwaCrop:
         return {
             "required": {
                 "image": (files, {"image_upload": True}),
-                "x": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
-                "y": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
+                "x": ("INT", {"default": 0, "min": -100000, "max": 100000, "step": 1}),
+                "y": ("INT", {"default": 0, "min": -100000, "max": 100000, "step": 1}),
                 "size": ("INT", {"default": 512, "min": 1, "max": 100000, "step": 1}),
             },
             "optional": {
@@ -63,14 +79,10 @@ class ManhwaCrop:
         if image_tensor.ndim != 4:
             raise ValueError("Expected IMAGE tensor with shape [B,H,W,C].")
 
-        _, h, w, _ = image_tensor.shape
-        side = _snap_size_to_16(int(size), min(int(w), int(h)))
-        max_x = max(0, int(w) - side)
-        max_y = max(0, int(h) - side)
-        x0 = max(0, min(int(x), max_x))
-        y0 = max(0, min(int(y), max_y))
-
-        cropped = image_tensor[:, y0:y0 + side, x0:x0 + side, :]
+        side = _snap_size_to_16(int(size))
+        x0 = int(x)
+        y0 = int(y)
+        cropped = _extract_square_with_white_padding(image_tensor, x0, y0, side)
         return (cropped, image_tensor, x0, y0, side)
 
 
@@ -88,8 +100,8 @@ class ManhwaStitchSave:
             "required": {
                 "original_image": ("IMAGE",),
                 "modified_square": ("IMAGE",),
-                "x": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
-                "y": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
+                "x": ("INT", {"default": 0, "min": -100000, "max": 100000, "step": 1}),
+                "y": ("INT", {"default": 0, "min": -100000, "max": 100000, "step": 1}),
                 "size": ("INT", {"default": 512, "min": 1, "max": 100000, "step": 1}),
                 "filename_prefix": ("STRING", {"default": "ManhwaCrop"}),
                 "stitch_and_save_trigger": ("INT", {"default": 0, "min": 0, "max": 2147483647, "step": 1}),
@@ -136,11 +148,25 @@ class ManhwaStitchSave:
 
             h = int(base.shape[0])
             w = int(base.shape[1])
-            side_limit = min(w, h, int(patch.shape[0]), int(patch.shape[1]))
-            side = _snap_size_to_16(int(size), side_limit)
-            x0 = max(0, min(int(x), w - side))
-            y0 = max(0, min(int(y), h - side))
-            base[y0:y0 + side, x0:x0 + side, :] = patch[:side, :side, :]
+            side = _snap_size_to_16(int(size))
+            side = min(side, int(patch.shape[0]), int(patch.shape[1]))
+
+            x0 = int(x)
+            y0 = int(y)
+            x1 = x0 + side
+            y1 = y0 + side
+
+            dst_x0 = max(0, x0)
+            dst_y0 = max(0, y0)
+            dst_x1 = min(w, x1)
+            dst_y1 = min(h, y1)
+
+            if dst_x1 > dst_x0 and dst_y1 > dst_y0:
+                src_x0 = dst_x0 - x0
+                src_y0 = dst_y0 - y0
+                src_x1 = src_x0 + (dst_x1 - dst_x0)
+                src_y1 = src_y0 + (dst_y1 - dst_y0)
+                base[dst_y0:dst_y1, dst_x0:dst_x1, :] = patch[src_y0:src_y1, src_x0:src_x1, :]
             stitched_batch.append(base.unsqueeze(0))
 
         stitched = torch.cat(stitched_batch, dim=0)

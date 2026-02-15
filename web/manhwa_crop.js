@@ -39,11 +39,9 @@ function getInputImageURL(node) {
 function toImageCoords(state, px, py) {
     const p = state.previewRect;
     const img = state.image;
-    const x = Math.floor((px - p.x) * (img.width / p.w));
-    const y = Math.floor((py - p.y) * (img.height / p.h));
     return {
-        x: clamp(x, 0, img.width - 1),
-        y: clamp(y, 0, img.height - 1),
+        x: Math.floor((px - p.x) * (img.width / p.w)),
+        y: Math.floor((py - p.y) * (img.height / p.h)),
     };
 }
 
@@ -58,7 +56,7 @@ function updateCropWidgets(node, x, y, size) {
 }
 
 function snapToClosestMultiple16(value, minValue, maxValue) {
-    if (maxValue < minValue) return maxValue;
+    if (maxValue < minValue) return minValue;
     const snapped = Math.round(value / 16) * 16;
     return clamp(snapped, minValue, maxValue);
 }
@@ -74,17 +72,9 @@ function snapSelectionTo16(node, state) {
     let x = Number(xw.value) || 0;
     let y = Number(yw.value) || 0;
     let size = Number(sw.value) || 16;
-
-    const absoluteMax = Math.min(img.width, img.height);
-    const maxMultiple = Math.floor(absoluteMax / 16) * 16;
-    if (maxMultiple >= 16) {
-        size = snapToClosestMultiple16(size, 16, maxMultiple);
-    } else {
-        size = clamp(size, 1, absoluteMax);
-    }
-
-    x = clamp(Math.round(x), 0, img.width - size);
-    y = clamp(Math.round(y), 0, img.height - size);
+    size = snapToClosestMultiple16(size, 16, 100000);
+    x = Math.round(x);
+    y = Math.round(y);
     updateCropWidgets(node, x, y, size);
 }
 
@@ -117,35 +107,14 @@ function drawPreview(node, ctx, widgetWidth, widgetY) {
     const t = ctx.getTransform();
     const h = Math.max(240, node.canvasHeight || 320);
 
-    Object.assign(state.canvas.style, {
-        left: `${t.e}px`,
-        top: `${t.f + (widgetY * t.d)}px`,
-        width: `${widgetWidth * t.a}px`,
-        height: `${h * t.d}px`,
-        position: "absolute",
-        zIndex: 5,
-        pointerEvents: "auto",
-    });
-    state.canvas.hidden = false;
-
     const dpr = window.devicePixelRatio || 1;
     const cssW = Math.max(1, Math.floor(widgetWidth * t.a));
     const cssH = Math.max(1, Math.floor(h * t.d));
-    state.canvas.width = Math.max(1, Math.floor(cssW * dpr));
-    state.canvas.height = Math.max(1, Math.floor(cssH * dpr));
-
-    const cctx = state.canvas.getContext("2d");
-    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    cctx.clearRect(0, 0, cssW, cssH);
-    cctx.fillStyle = "#161616";
-    cctx.fillRect(0, 0, cssW, cssH);
 
     const img = state.image;
     if (!img || !img.width || !img.height) {
         state.previewRect = null;
-        cctx.fillStyle = "#bdbdbd";
-        cctx.font = "12px sans-serif";
-        cctx.fillText("Select image and drag a square.", 12, 22);
+        state.canvas.hidden = true;
         return;
     }
 
@@ -156,11 +125,27 @@ function drawPreview(node, ctx, widgetWidth, widgetY) {
     const drawH = img.height * scale;
     const drawX = PAD + (availW - drawW) * 0.5;
     const drawY = PAD + (availH - drawH) * 0.5;
-    state.previewRect = { x: drawX, y: drawY, w: drawW, h: drawH };
+    state.previewRect = { x: 0, y: 0, w: drawW, h: drawH };
 
-    cctx.drawImage(img, drawX, drawY, drawW, drawH);
+    Object.assign(state.canvas.style, {
+        left: `${t.e + drawX}px`,
+        top: `${t.f + (widgetY * t.d) + drawY}px`,
+        width: `${drawW}px`,
+        height: `${drawH}px`,
+        position: "absolute",
+        zIndex: 5,
+        pointerEvents: "auto",
+    });
+    state.canvas.hidden = false;
+    state.canvas.width = Math.max(1, Math.floor(drawW * dpr));
+    state.canvas.height = Math.max(1, Math.floor(drawH * dpr));
+
+    const cctx = state.canvas.getContext("2d");
+    cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cctx.clearRect(0, 0, drawW, drawH);
+    cctx.drawImage(img, 0, 0, drawW, drawH);
     cctx.strokeStyle = "#3a3a3a";
-    cctx.strokeRect(drawX, drawY, drawW, drawH);
+    cctx.strokeRect(0, 0, drawW, drawH);
     drawCropOverlay(node, cctx, state);
 }
 
@@ -184,17 +169,14 @@ function installCropPointerHandlers(node) {
         const pt = getLocal(evt);
         const cur = toImageCoords(state, pt.x, pt.y);
         const start = state.startImage;
-        const img = state.image;
 
         const dx = cur.x - start.x;
         const dy = cur.y - start.y;
         let side = Math.max(Math.abs(dx), Math.abs(dy));
-        side = clamp(side, 1, Math.min(img.width, img.height));
+        side = clamp(side, 1, 100000);
 
         let x = dx >= 0 ? start.x : (start.x - side);
         let y = dy >= 0 ? start.y : (start.y - side);
-        x = clamp(x, 0, img.width - side);
-        y = clamp(y, 0, img.height - side);
 
         updateCropWidgets(node, x, y, side);
     };
