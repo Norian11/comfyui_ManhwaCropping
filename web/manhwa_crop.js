@@ -33,7 +33,8 @@ function getInputImageURL(node) {
     if (!w || !w.value) return null;
     const filename = String(w.value).trim();
     if (!filename) return null;
-    return `/view?filename=${encodeURIComponent(filename)}&type=input`;
+    const stamp = `${node.id || "node"}-${encodeURIComponent(filename)}`;
+    return `/view?filename=${encodeURIComponent(filename)}&type=input&v=${stamp}`;
 }
 
 function toImageCoords(state, px, py) {
@@ -76,6 +77,54 @@ function snapSelectionTo16(node, state) {
     x = Math.round(x);
     y = Math.round(y);
     updateCropWidgets(node, x, y, size);
+}
+
+function resetImageState(node, state) {
+    state.dragging = false;
+    state.start = null;
+    state.startImage = null;
+    state.previewRect = null;
+    state.image = null;
+    if (state.canvas) {
+        state.canvas.hidden = true;
+        const cctx = state.canvas.getContext("2d");
+        if (cctx) {
+            cctx.setTransform(1, 0, 0, 1, 0, 0);
+            cctx.clearRect(0, 0, state.canvas.width || 0, state.canvas.height || 0);
+        }
+    }
+    node.setDirtyCanvas(true, true);
+}
+
+function beginImageLoad(node, src) {
+    const state = node.__manhwa;
+    if (!state) return;
+
+    state.loadToken = (state.loadToken || 0) + 1;
+    const token = state.loadToken;
+    state.imageSrc = src;
+    resetImageState(node, state);
+
+    if (!src) {
+        return;
+    }
+
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = () => {
+        if (!node.__manhwa || node.__manhwa.loadToken !== token || node.__manhwa.imageSrc !== src) {
+            return;
+        }
+        node.__manhwa.image = img;
+        node.setDirtyCanvas(true, true);
+    };
+    img.onerror = () => {
+        if (!node.__manhwa || node.__manhwa.loadToken !== token) {
+            return;
+        }
+        resetImageState(node, node.__manhwa);
+    };
+    img.src = src;
 }
 
 function drawCropOverlay(node, cctx, state) {
@@ -250,6 +299,8 @@ app.registerExtension({
                     previewRect: null,
                     dragging: false,
                     start: null,
+                    startImage: null,
+                    loadToken: 0,
                 };
                 this.size = this.size || [MIN_W, MIN_H];
                 this.size[0] = Math.max(this.size[0], MIN_W);
@@ -270,8 +321,12 @@ app.registerExtension({
 
             const onRemoved = nodeType.prototype.onRemoved;
             nodeType.prototype.onRemoved = function () {
-                if (this.__manhwa && this.__manhwa.canvas && this.__manhwa.canvas.parentNode) {
-                    this.__manhwa.canvas.parentNode.removeChild(this.__manhwa.canvas);
+                if (this.__manhwa) {
+                    this.__manhwa.loadToken = (this.__manhwa.loadToken || 0) + 1;
+                    resetImageState(this, this.__manhwa);
+                    if (this.__manhwa.canvas && this.__manhwa.canvas.parentNode) {
+                        this.__manhwa.canvas.parentNode.removeChild(this.__manhwa.canvas);
+                    }
                 }
                 if (onRemoved) onRemoved.apply(this, arguments);
             };
@@ -288,14 +343,8 @@ app.registerExtension({
                 const st = this.__manhwa;
                 if (!st) return;
                 const src = getInputImageURL(this);
-                if (src && src !== st.imageSrc) {
-                    st.imageSrc = src;
-                    const img = new Image();
-                    img.onload = () => {
-                        st.image = img;
-                        this.setDirtyCanvas(true, true);
-                    };
-                    img.src = src;
+                if (src !== st.imageSrc) {
+                    beginImageLoad(this, src);
                 }
             };
         }
